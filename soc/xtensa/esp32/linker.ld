@@ -24,39 +24,6 @@
 #define IRAM_REGION iram0_0_seg :iram0_0_phdr
 #define FLASH_CODE_REGION irom0_0_seg :irom0_0_phdr
 
-PROVIDE ( __stack = 0x3ffe3f20 );
-
-/* Global symbols required for espressif hal build */
-PROVIDE ( ets_printf = 0x40007d54 );
-PROVIDE ( intr_matrix_set = 0x4000681c );
-PROVIDE ( g_ticks_per_us_app = 0x3ffe40f0 );
-PROVIDE ( g_ticks_per_us_pro = 0x3ffe01e0 );
-PROVIDE ( ets_delay_us = 0x40008534 );
-PROVIDE ( gpio_output_set = 0x40009b24 );
-PROVIDE ( gpio_output_set_high = 0x40009b5c );
-PROVIDE ( roundup2 = 0x4000ab7c );
-PROVIDE ( crc32_le = 0x4005cfec );
-PROVIDE ( Cache_Read_Disable_rom = 0x40009ab8 );
-PROVIDE ( Cache_Read_Enable_rom = 0x40009a84 );
-PROVIDE ( Cache_Read_Init_rom = 0x40009950 );
-
-PROVIDE ( esp32_rom_uart_tx_one_char = 0x40009200 );
-PROVIDE ( esp32_rom_uart_rx_one_char = 0x400092d0 );
-PROVIDE ( esp32_rom_uart_attach = 0x40008fd0 );
-PROVIDE ( esp32_rom_uart_tx_wait_idle = 0x40009278 );
-PROVIDE ( esp32_rom_intr_matrix_set = intr_matrix_set );
-PROVIDE ( esp32_rom_gpio_matrix_in = 0x40009edc );
-PROVIDE ( esp32_rom_gpio_matrix_out = 0x40009f0c );
-PROVIDE ( esp32_rom_Cache_Flush = 0x40009a14 );
-PROVIDE ( esp32_rom_Cache_Read_Enable = 0x40009a84 );
-PROVIDE ( esp32_rom_ets_set_appcpu_boot_addr = 0x4000689c );
-PROVIDE ( esp32_rom_i2c_readReg = 0x40004148 );
-PROVIDE ( esp32_rom_i2c_writeReg = 0x400041a4 );
-PROVIDE ( esp32_rom_ets_printf = ets_printf );
-PROVIDE ( esp32_rom_g_ticks_per_us_app = g_ticks_per_us_app );
-PROVIDE ( esp32_rom_g_ticks_per_us_pro = g_ticks_per_us_app );
-PROVIDE ( esp32_rom_ets_delay_us = ets_delay_us );
-
 MEMORY
 {
   iram0_0_seg(RX): org = 0x40080000, len = 0x20000
@@ -72,13 +39,15 @@ MEMORY
    *
    * FIXME:
    *  - Utilize available memory regions to full capacity
-   *  - Reserve memory region for BT controller library from ROM
    */
-  dram0_0_seg(RW): org = 0x3FFB0000, len = 0x30000
+  dram0_0_seg(RW): org = 0x3FFB0000 + CONFIG_ESP32_BT_RESERVE_DRAM, len = 0x2c200 - CONFIG_ESP32_BT_RESERVE_DRAM
   dram0_1_seg(RW): org = 0x3FFE4350, len = 0x1BCB0
   drom0_0_seg(R): org = 0x3F400020, len = 0x400000-0x20
   rtc_iram_seg(RWX): org = 0x400C0000, len = 0x2000
   rtc_slow_seg(RW): org = 0x50000000, len = 0x1000
+#if defined(CONFIG_ESP_SPIRAM)
+  ext_ram_seg(RW): org = 0x3F800000, len = CONFIG_ESP_SPIRAM_SIZE
+#endif
 #ifdef CONFIG_GEN_ISR_TABLES
   IDT_LIST(RW): org = 0x3ebfe010, len = 0x2000
 #endif
@@ -236,23 +205,39 @@ _net_buf_pool_list = _esp_net_buf_pool_list;
 #pragma pop_macro("Z_ITERABLE_SECTION_RAM_GC_ALLOWED")
 #pragma pop_macro("Z_ITERABLE_SECTION_RAM")
 
-  SECTION_PROLOGUE(_RODATA_SECTION_NAME,,ALIGN(20))
+  .dram0.data :
   {
-    _rodata_start = ABSOLUTE(.);
+    _data_start = ABSOLUTE(.);
 
-#if defined(CONFIG_NET_SOCKETS)
-    . = ALIGN(4);
-    Z_LINK_ITERABLE(net_socket_register);
-    . = ALIGN(4);
-#endif
+    _btdm_data_start = ABSOLUTE(.);
+    *libbtdm_app.a:(.data .data.*)
+    . = ALIGN (4);
+    _btdm_data_end = ABSOLUTE(.);
 
-#if defined(CONFIG_SETTINGS)
-    . = ALIGN(4);
-    Z_LINK_ITERABLE(settings_handler_static);
-    . = ALIGN(4);
-#endif
+    *(.data)
+    *(.data.*)
+    *(.gnu.linkonce.d.*)
+    *(.data1)
+    *(.sdata)
+    *(.sdata.*)
+    *(.gnu.linkonce.s.*)
+    *(.sdata2)
+    *(.sdata2.*)
+    *(.gnu.linkonce.s2.*)
+    /* rodata for panic handler(libarch__xtensa__core.a) and all
+     * dependent functions should be placed in DRAM to avoid issue
+     * when flash cache is disabled */
+    *libarch__xtensa__core.a:(.rodata .rodata.*)
+    *libkernel.a:fatal.*(.rodata .rodata.*)
+    *libkernel.a:init.*(.rodata .rodata.*)
+    *libzephyr.a:cbprintf_complete*(.rodata .rodata.*)
+    *libzephyr.a:log_core.*(.rodata .rodata.*)
+    *libzephyr.a:log_backend_uart.*(.rodata .rodata.*)
+    *libzephyr.a:log_output.*(.rodata .rodata.*)
+    *libdrivers__flash.a:flash_esp32.*(.rodata  .rodata.*)
+    *libdrivers__serial.a:uart_esp32.*(.rodata .rodata.*)
 
-    . = ALIGN(4);
+   . = ALIGN(4);
     __esp_log_const_start = .;
     KEEP(*(SORT(.log_const_*)));
     __esp_log_const_end = .;
@@ -262,9 +247,24 @@ _net_buf_pool_list = _esp_net_buf_pool_list;
     KEEP(*("._log_backend.*"));
     __esp_log_backends_end = .;
 
+    KEEP(*(.jcr))
+    *(.dram1 .dram1.*)
+    _data_end = ABSOLUTE(.);
     . = ALIGN(4);
-    Z_LINK_ITERABLE(shell);
-    . = ALIGN(4);
+  } GROUP_LINK_IN(RAMABLE_REGION)
+
+#if defined(CONFIG_ESP_SPIRAM)
+  .ext_ram.bss (NOLOAD):
+  {
+    _ext_ram_data_start = ABSOLUTE(.);
+    *(.ext_ram.bss*)
+    _ext_ram_data_end = ABSOLUTE(.) + CONFIG_ESP_SPIRAM_SIZE;
+  } > ext_ram_seg
+#endif
+
+ SECTION_PROLOGUE(_RODATA_SECTION_NAME,,ALIGN(20))
+  {
+    _rodata_start = ABSOLUTE(.);
 
     __esp_shell_root_cmds_start = .;
     KEEP(*(SORT(.shell_root_cmd_*)));
@@ -302,10 +302,7 @@ _net_buf_pool_list = _esp_net_buf_pool_list;
     _rodata_end = ABSOLUTE(.);
   } GROUP_LINK_IN(ROMABLE_REGION)
 
-#pragma push_macro("Z_ITERABLE_SECTION_ROM")
 #pragma push_macro("ROMABLE_REGION")
-#undef Z_ITERABLE_SECTION_ROM
-#define Z_ITERABLE_SECTION_ROM(x,y)
 #undef ROMABLE_REGION
 /* This is to workaround limitation of `esptool` which needs single `FLASH` data segment
  * which is already defined above. In case, `common-rom.ld` creates additional segments
@@ -320,7 +317,6 @@ __log_backends_end = __esp_log_backends_end;
 __shell_root_cmds_start = __esp_shell_root_cmds_start;
 __shell_root_cmds_end = __esp_shell_root_cmds_end;
 #pragma pop_macro("ROMABLE_REGION")
-#pragma pop_macro("Z_ITERABLE_SECTION_ROM")
 
   SECTION_PROLOGUE(_TEXT_SECTION_NAME, , ALIGN(4))
   {
@@ -334,43 +330,55 @@ __shell_root_cmds_end = __esp_shell_root_cmds_end;
     *libsubsys__net__lib__config.a:(.literal .text .literal.* .text.*)
     *libsubsys__net__ip.a:(.literal .text .literal.* .text.*)
     *libsubsys__net.a:(.literal .text .literal.* .text.*)
+    *libarch__xtensa__core.a:(.literal .text .literal.* .text.*)
     *libkernel.a:(.literal .text .literal.* .text.*)
     *libsoc.a:rtc_*.*(.literal .text .literal.* .text.*)
     *libsoc.a:cpu_util.*(.literal .text .literal.* .text.*)
-    *libhal.a:(.literal .text .literal.* .text.*)
     *libgcc.a:lib2funcs.*(.literal .text .literal.* .text.*)
-    *libspi_flash.a:spi_flash_rom_patch.*(.literal .text .literal.* .text.*)
+    *libdrivers__flash.a:flash_esp32.*(.literal .text .literal.* .text.*)
+    *libzephyr.a:windowspill_asm.*(.literal .text .literal.* .text.*)
+    *libzephyr.a:log_noos.*(.literal .text .literal.* .text.*)
+    *libzephyr.a:xtensa_sys_timer.*(.literal .text .literal.* .text.*)
+    *libzephyr.a:log_core.*(.literal .text .literal.* .text.*)
+    *libzephyr.a:cbprintf_complete.*(.literal .text .literal.* .text.*)
+    *libzephyr.a:printk.*(.literal.printk .literal.vprintk .literal.char_out .text.printk .text.vprintk .text.char_out)
+    *libzephyr.a:log_msg.*(.literal .text .literal.* .text.*)
+    *libzephyr.a:log_list.*(.literal .text .literal.* .text.*)
+    *libzephyr.a:uart_console.*(.literal.console_out .text.console_out)
+    *libzephyr.a:log_output.*(.literal .text .literal.* .text.*)
+    *libzephyr.a:log_backend_uart.*(.literal .text .literal.* .text.*)
+    *liblib__libc__minimal.a:string.*(.literal .text .literal.* .text.*)
     *libgcov.a:(.literal .text .literal.* .text.*)
+
+#if defined(CONFIG_ESP32_WIFI_IRAM_OPT)
     *libnet80211.a:( .wifi0iram  .wifi0iram.*)
     *libpp.a:( .wifi0iram  .wifi0iram.*)
+#endif
+
+#if defined(CONFIG_ESP32_WIFI_RX_IRAM_OPT)
     *libnet80211.a:( .wifirxiram  .wifirxiram.*)
     *libpp.a:( .wifirxiram  .wifirxiram.*)
-    _iram_text_end = ABSOLUTE(.);
-  } GROUP_LINK_IN(IRAM_REGION)
+#endif
 
-  .dram0.data :
-  {
-    _data_start = ABSOLUTE(.);
-    *(.data)
-    *(.data.*)
-    *(.gnu.linkonce.d.*)
-    *(.data1)
-    *(.sdata)
-    *(.sdata.*)
-    *(.gnu.linkonce.s.*)
-    *(.sdata2)
-    *(.sdata2.*)
-    *(.gnu.linkonce.s2.*)
-    KEEP(*(.jcr))
-    *(.dram1 .dram1.*)
-    _data_end = ABSOLUTE(.);
+    _iram_text_end = ABSOLUTE(.);
     . = ALIGN(4);
-  } GROUP_LINK_IN(RAMABLE_REGION)
+    _iram_end = ABSOLUTE(.);
+  } GROUP_LINK_IN(IRAM_REGION)
 
   .flash.text :
   {
     _stext = .;
     _text_start = ABSOLUTE(.);
+
+#if !defined(CONFIG_ESP32_WIFI_IRAM_OPT)
+    *libnet80211.a:( .wifi0iram  .wifi0iram.*)
+    *libpp.a:( .wifi0iram  .wifi0iram.*)
+#endif
+
+#if !defined(CONFIG_ESP32_WIFI_RX_IRAM_OPT)
+    *libnet80211.a:( .wifirxiram  .wifirxiram.*)
+    *libpp.a:( .wifirxiram  .wifirxiram.*)
+#endif
 
     *(.literal .text .literal.* .text.*)
     _text_end = ABSOLUTE(.);
@@ -388,6 +396,12 @@ __shell_root_cmds_end = __esp_shell_root_cmds_end;
   {
     . = ALIGN (8);
     _bss_start = ABSOLUTE(.);
+
+    _btdm_bss_start = ABSOLUTE(.);
+    *libbtdm_app.a:(.bss .bss.* COMMON)
+    . = ALIGN (4);
+    _btdm_bss_end = ABSOLUTE(.);
+
     *(.dynsbss)
     *(.sbss)
     *(.sbss.*)
@@ -406,13 +420,15 @@ __shell_root_cmds_end = __esp_shell_root_cmds_end;
     _bss_end = ABSOLUTE(.);
   } GROUP_LINK_IN(RAMABLE_REGION)
 
+  ASSERT(((_bss_end - ORIGIN(dram0_0_seg)) <= LENGTH(dram0_0_seg)),
+          "DRAM segment data does not fit.")
+
   SECTION_DATA_PROLOGUE(_NOINIT_SECTION_NAME, (NOLOAD),)
   {
     . = ALIGN (8);
     *(.noinit)
     *(".noinit.*")
     . = ALIGN (8);
-    _heap_start = ABSOLUTE(.);
   } GROUP_LINK_IN(RAMABLE_REGION_1)
 
 #ifdef CONFIG_GEN_ISR_TABLES
@@ -427,3 +443,6 @@ __shell_root_cmds_end = __esp_shell_root_cmds_end;
   }
 
 }
+
+ASSERT(((_iram_end - ORIGIN(iram0_0_seg)) <= LENGTH(iram0_0_seg)),
+          "IRAM0 segment data does not fit.")

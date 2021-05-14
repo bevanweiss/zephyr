@@ -39,14 +39,6 @@
 #include "prov.h"
 #include "cfg.h"
 
-/* Minimum valid Mesh Network PDU length. The Network headers
- * themselves take up 9 bytes. After that there is a minimum of 1 byte
- * payload for both CTL=1 and CTL=0 PDUs (smallest OpCode is 1 byte). CTL=1
- * PDUs must use a 64-bit (8 byte) NetMIC, whereas CTL=0 PDUs have at least
- * a 32-bit (4 byte) NetMIC and AppMIC giving again a total of 8 bytes.
- */
-#define BT_MESH_NET_MIN_PDU_LEN (BT_MESH_NET_HDR_LEN + 1 + 8)
-
 #define LOOPBACK_MAX_PDU_LEN (BT_MESH_NET_HDR_LEN + 16)
 #define LOOPBACK_USER_DATA_SIZE sizeof(struct bt_mesh_subnet *)
 #define LOOPBACK_BUF_SUB(buf) (*(struct bt_mesh_subnet **)net_buf_user_data(buf))
@@ -146,11 +138,6 @@ static void msg_cache_add(struct bt_mesh_net_rx *rx)
 	msg_cache_next %= ARRAY_SIZE(msg_cache);
 }
 
-static void store_net(void)
-{
-	bt_mesh_settings_store_schedule(BT_MESH_SETTINGS_NET_PENDING);
-}
-
 static void store_iv(bool only_duration)
 {
 	bt_mesh_settings_store_schedule(BT_MESH_SETTINGS_IV_PENDING);
@@ -163,7 +150,7 @@ static void store_iv(bool only_duration)
 
 static void store_seq(void)
 {
-	if (CONFIG_BT_MESH_SEQ_STORE_RATE &&
+	if (CONFIG_BT_MESH_SEQ_STORE_RATE > 1 &&
 	    (bt_mesh.seq % CONFIG_BT_MESH_SEQ_STORE_RATE)) {
 		return;
 	}
@@ -206,7 +193,6 @@ int bt_mesh_net_create(uint16_t idx, uint8_t flags, const uint8_t key[16],
 
 	if (IS_ENABLED(CONFIG_BT_SETTINGS)) {
 		BT_DBG("Storing network information persistently");
-		store_net();
 		bt_mesh_subnet_store(idx);
 		store_iv(false);
 	}
@@ -320,7 +306,7 @@ do_update:
 		bt_mesh.seq = 0U;
 	}
 
-	k_delayed_work_submit(&bt_mesh.ivu_timer, BT_MESH_IVU_TIMEOUT);
+	k_work_reschedule(&bt_mesh.ivu_timer, BT_MESH_IVU_TIMEOUT);
 
 	/* Notify other modules */
 	if (IS_ENABLED(CONFIG_BT_MESH_FRIEND)) {
@@ -747,6 +733,11 @@ int bt_mesh_net_decode(struct net_buf_simple *in, enum bt_mesh_net_if net_if,
 		return -EINVAL;
 	}
 
+	if (in->len > BT_MESH_NET_MAX_PDU_LEN) {
+		BT_WARN("Dropping too long mesh packet (len %u)", in->len);
+		return -EINVAL;
+	}
+
 	if (net_if == BT_MESH_NET_IF_ADV && check_dup(in)) {
 		return -EINVAL;
 	}
@@ -796,7 +787,7 @@ int bt_mesh_net_decode(struct net_buf_simple *in, enum bt_mesh_net_if net_if,
 void bt_mesh_net_recv(struct net_buf_simple *data, int8_t rssi,
 		      enum bt_mesh_net_if net_if)
 {
-	NET_BUF_SIMPLE_DEFINE(buf, 29);
+	NET_BUF_SIMPLE_DEFINE(buf, BT_MESH_NET_MAX_PDU_LEN);
 	struct bt_mesh_net_rx rx = { .ctx.recv_rssi = rssi };
 	struct net_buf_simple_state state;
 
@@ -853,6 +844,10 @@ void bt_mesh_net_recv(struct net_buf_simple *data, int8_t rssi,
 
 static void ivu_refresh(struct k_work *work)
 {
+	if (!bt_mesh_is_provisioned()) {
+		return;
+	}
+
 	bt_mesh.ivu_duration = MIN(UINT8_MAX,
 	       bt_mesh.ivu_duration + BT_MESH_IVU_HOURS);
 
@@ -866,7 +861,7 @@ static void ivu_refresh(struct k_work *work)
 			store_iv(true);
 		}
 
-		k_delayed_work_submit(&bt_mesh.ivu_timer, BT_MESH_IVU_TIMEOUT);
+		k_work_reschedule(&bt_mesh.ivu_timer, BT_MESH_IVU_TIMEOUT);
 		return;
 	}
 
@@ -880,7 +875,7 @@ static void ivu_refresh(struct k_work *work)
 
 void bt_mesh_net_init(void)
 {
-	k_delayed_work_init(&bt_mesh.ivu_timer, ivu_refresh);
+	k_work_init_delayable(&bt_mesh.ivu_timer, ivu_refresh);
 
 	k_work_init(&bt_mesh.local_work, bt_mesh_net_local);
 }
@@ -1089,6 +1084,6 @@ void bt_mesh_net_clear(void)
 void bt_mesh_net_settings_commit(void)
 {
 	if (bt_mesh.ivu_duration < BT_MESH_IVU_MIN_HOURS) {
-		k_delayed_work_submit(&bt_mesh.ivu_timer, BT_MESH_IVU_TIMEOUT);
+		k_work_reschedule(&bt_mesh.ivu_timer, BT_MESH_IVU_TIMEOUT);
 	}
 }

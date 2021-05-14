@@ -32,6 +32,7 @@ LOG_MODULE_REGISTER(net_l2_openthread, CONFIG_OPENTHREAD_L2_LOG_LEVEL);
 #include <openthread/joiner.h>
 #include <openthread-system.h>
 #include <openthread-config-generic.h>
+#include <utils/uart.h>
 
 #include <platform-zephyr.h>
 
@@ -67,6 +68,12 @@ LOG_MODULE_REGISTER(net_l2_openthread, CONFIG_OPENTHREAD_L2_LOG_LEVEL);
 #define OT_XPANID CONFIG_OPENTHREAD_XPANID
 #else
 #define OT_XPANID ""
+#endif
+
+#if defined(CONFIG_OPENTHREAD_MASTERKEY)
+#define OT_MASTERKEY CONFIG_OPENTHREAD_MASTERKEY
+#else
+#define OT_MASTERKEY ""
 #endif
 
 #if defined(CONFIG_OPENTHREAD_JOINER_PSKD)
@@ -124,6 +131,18 @@ static void ipv6_addr_event_handler(struct net_mgmt_event_callback *cb,
 	}
 }
 #endif
+
+static int ncp_hdlc_send(const uint8_t *buf, uint16_t len)
+{
+	otError err;
+
+	err = otPlatUartSend(buf, len);
+	if (err != OT_ERROR_NONE) {
+		return 0;
+	}
+
+	return len;
+}
 
 void otPlatRadioGetIeeeEui64(otInstance *instance, uint8_t *ieee_eui64)
 {
@@ -314,6 +333,8 @@ int openthread_send(struct net_if *iface, struct net_pkt *pkt)
 		net_pkt_hexdump(pkt, "IPv6 packet to send");
 	}
 
+	net_capture_pkt(iface, pkt);
+
 	if (notify_new_tx_frame(pkt) != 0) {
 		net_pkt_unref(pkt);
 	}
@@ -374,12 +395,19 @@ int openthread_start(struct openthread_context *ot_context)
 		NET_DBG("Loading OpenThread default configuration.");
 
 		otExtendedPanId xpanid;
+		otMasterKey     masterkey;
 
 		otThreadSetNetworkName(ot_instance, OT_NETWORK_NAME);
 		otLinkSetChannel(ot_instance, OT_CHANNEL);
 		otLinkSetPanId(ot_instance, OT_PANID);
 		net_bytes_from_str(xpanid.m8, 8, (char *)OT_XPANID);
 		otThreadSetExtendedPanId(ot_instance, &xpanid);
+
+		if (strlen(OT_MASTERKEY)) {
+			net_bytes_from_str(masterkey.m8, OT_MASTER_KEY_SIZE,
+					   (char *)OT_MASTERKEY);
+			otThreadSetMasterKey(ot_instance, &masterkey);
+		}
 	}
 
 	NET_INFO("Network name: %s",
@@ -439,7 +467,8 @@ static int openthread_init(struct net_if *iface)
 	}
 
 	if (IS_ENABLED(CONFIG_OPENTHREAD_COPROCESSOR)) {
-		otNcpInit(ot_context->instance);
+		otPlatUartEnable();
+		otNcpHdlcInit(ot_context->instance, ncp_hdlc_send);
 	} else {
 		otIp6SetReceiveFilterEnabled(ot_context->instance, true);
 		otIp6SetReceiveCallback(ot_context->instance,
